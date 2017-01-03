@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:id="@+id/headView"
+    android:layout_width="match_parent"
+    android:layout_height="120dp"
+    android:background="@android:color/holo_red_light"
+    >
+    <TextView
+        android:id="@+id/tv_headView"
+        android:layout_width="match_parent"
+        android:layout_height="240dp"
+        android:gravity="center"
+        android:textColor="@android:color/holo_green_dark"
+        android:text="我是头布局" />
+</RelativeLayout>
