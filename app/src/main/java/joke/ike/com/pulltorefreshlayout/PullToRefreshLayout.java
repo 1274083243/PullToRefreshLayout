@@ -1,15 +1,20 @@
 package joke.ike.com.pulltorefreshlayout;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.os.Handler;
+import android.support.annotation.Nullable;
 import android.support.v4.view.ViewCompat;
+import android.support.v4.widget.SwipeRefreshLayout;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.Scroller;
 import android.widget.TextView;
 
@@ -19,18 +24,19 @@ import org.w3c.dom.ls.LSInput;
  * Created by ike on 2016/12/29.
  * 下拉刷新控件
  */
-public class PullToRefreshLayout extends LinearLayout {
+public class PullToRefreshLayout extends LinearLayout implements ValueAnimator.AnimatorUpdateListener {
     private String Tag = "PullToRefreshLayout";
     private View headView;
     private TextView tv_headView;
     private Scroller mScroll;
-    private int headViewHeight;
-    private Context context;
-    private LinearLayout contentView;
+    private ListView contentView;
     private RefreshListener listener;
     private boolean isRefreshing;
-    private boolean isDraging;
-
+    //lastPos 是最近一次抬手或者动画完成时的ChildView的偏移量
+    private float LastPos = 0;
+    //当前位置偏移量
+    private float offsetY;
+    private boolean mHasSendCancel = false;
     public PullToRefreshLayout(Context context) {
         this(context, null);
     }
@@ -41,10 +47,10 @@ public class PullToRefreshLayout extends LinearLayout {
     public PullToRefreshLayout(Context context, AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
         mScroll=new Scroller(context);
-        this.context=context;
+        initAnimator();
     }
     private void initView() {
-        contentView= (LinearLayout) findViewById(R.id.content);
+        contentView= (ListView) findViewById(R.id.content);
         headView=findViewById(R.id.headView);
         tv_headView = (TextView)findViewById(R.id.tv_headView);
     }
@@ -67,218 +73,152 @@ public class PullToRefreshLayout extends LinearLayout {
         heightMeasureSpec=MeasureSpec.makeMeasureSpec(MeasureSpec.getSize(heightMeasureSpec)+headView.getMeasuredHeight(),MeasureSpec.EXACTLY);
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
     }
-
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-        int y= (int) ev.getY();
-        switch (ev.getActionMasked()){
-            case MotionEvent.ACTION_DOWN:
-                lastY=y;
-                break;
-            case MotionEvent.ACTION_MOVE:
-                int dy=y-lastY;
-                if ((y-lastY)>0){//下滑
-                    if (getScrollChild() instanceof AbsListView){
-                        // 判断AbsListView是否已经到达内容最顶部(如果已经到达最顶部，就拦截事件，自己处理滑动)
-                        if (isListViewToTop()){
-                            ((AbsListView) getScrollChild()).requestDisallowInterceptTouchEvent(false);
-                            Move(dy);
-                        }
-                    }
-                }else {//上滑
-                    if (getScrollY()==0){
-                        ((AbsListView) getScrollChild()).requestDisallowInterceptTouchEvent(true);
-                    }else {
-                        Move(dy);
-                        return true;
-                    }
-                }
-                //向下拉动
-                break;
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                if (getScrollY() != 0) {
-                    int distance = getScrollY() + headView.getMeasuredHeight();
-                    if (Math.abs(getScrollY()) >= headView.getMeasuredHeight() / 2) {
-                        mScroll.startScroll(0, getScrollY(), 0, -distance, 300);
-                        handler.post(new AnnimationTask());
-                        tv_headView.setText("刷新中");
-                        if (listener != null) {
-                            if (!isRefreshing) {
-                                isRefreshing = true;
-                                listener.onReresh();
-                            }
-                        }
-                    } else {
-                        mScroll.startScroll(0, getScrollY(), 0, distance, 300);
-                        handler.post(new AnnimationTask());
-                    }
-                }
-                break;
+        Boolean other = Mime(ev);
+        if (other!=null){
+            return other;
         }
-        lastY=y;
+
         return super.dispatchTouchEvent(ev);
     }
+    private float startY;
+    float my_start_Y=0;
+    @Nullable
+    private Boolean Mime(MotionEvent ev) {
+       // int y = (int) ev.getY();
+        switch (ev.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                my_start_Y=ev.getY();
+                super.dispatchTouchEvent(ev);
+                Log.e(Tag,"down事件");
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                float curr_Y=ev.getY();
+                //子view还可可以向上滑动：未到达顶部,不拦截事件，继续向子view分发
+                if (canChildScrollUp()){
+                   my_start_Y=curr_Y;
+                  break;
+                }else {
+                    float dy=curr_Y-my_start_Y;
+                    //子view已经到达顶部，不可滑动：这是拦截事件不在将事件分发到子view，由父亲布局相应事件，拦截事件
+                    //dy:当前滑动距离
+                    float newOffset=LastPos+dy/2;//当前的偏移量
+                   // Log.e(Tag,"newOffset:"+newOffset);
+                    //newOffset=0:headView头布局刚好被隐藏
+                    //newOffset<0:父布局交付滑动事件，子孩子响应滑动事件
+                   // Log.e(Tag,"newOffset:"+newOffset+",dy:"+dy);
+                    if (newOffset<0){
+                        if (!mHasSendCancel) {
+                            return super.dispatchTouchEvent(ev);
+                        }else {
+                            LastPos=0;
+                            move(0);
+                            //重置move事件为down事件，重新进行事件的分发
+                          //  MotionEvent downEvent = MotionEvent.obtain(ev.getDownTime(), ev.getEventTime() + ViewConfiguration.getLongPressTimeout(), MotionEvent.ACTION_DOWN, ev.getX(), ev.getY(), ev.getMetaState());
 
-    private boolean isListViewToTop() {
-        AdapterView content= (AdapterView) getScrollChild();
-        boolean b = ViewCompat.canScrollVertically(content, -1);
-        return !b;
-    }
+                            ev.setAction(MotionEvent.ACTION_DOWN);
+                            MotionEvent downEvent = MotionEvent.obtain(ev);
+                            mHasSendCancel = false;
+                            return super.dispatchTouchEvent(downEvent);
+                        }
+                    }
+                    if (!mHasSendCancel) {
+                        //down事件被下层接收，造成下层控件显示按下效果（比如listview按下时Item颜色加深），如果此后要拦截move事件，就发一个cancel事件让下层view取消按下的效果
+                        ev.setAction(MotionEvent.ACTION_CANCEL);
+                        MotionEvent cancelEvent = MotionEvent.obtain(ev);
+                        super.dispatchTouchEvent(cancelEvent);
+                        mHasSendCancel = true;
+                    }
+                    move(newOffset);
 
-    private View getScrollChild() {
-        return contentView.getChildAt(0);
-    }
-
-    private void Move(int dy) {
-        if (dy>0){
-            if (Math.abs(getScrollY())>headView.getMeasuredHeight()){
-                scrollBy(0,-dy/3);
-                if (!isRefreshing){
-                    tv_headView.setText("松开刷新");
+                    return true;
+                }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                LastPos= offsetY;
+                //当前位移距离==0，即是头布局已经隐藏，则需要将事件分发下去，有子view处理相关的事件
+                if (offsetY<=0){
+                    break;
+                }
+                //如果位移距离没有超过头布局的高度
+                if (offsetY<headView.getMeasuredHeight()){
+                        //直接返回头部
+                        backToTop();
+                }else if (offsetY>=headView.getMeasuredHeight()){
+                        backToRefresh();
+                    if (!isRefreshing){
+                        isRefreshing=true;
+                        if (listener!=null){
+                            listener.onReresh();
+                        }
+                    }
                 }
 
-            }else if (Math.abs(getScrollY())>headView.getMeasuredHeight()/2){
-                if (!isRefreshing){
-                    tv_headView.setText("下拉刷新");
-                }
-                scrollBy(0, -dy);
-            }else {
-                scrollBy(0, -dy);
-            }
-        }else {
-            scrollBy(0, -dy);
+            break;
         }
+
+        return super.dispatchTouchEvent(ev);
+    }
+    private ValueAnimator mBackToTop;
+    private ValueAnimator mBackToRefreshing;
+    /**
+     * 将布局而重新摆回初始化的位置
+     */
+    private void backToTop() {
+        mBackToTop.setFloatValues(offsetY,0);
+        mBackToTop.start();
     }
 
-    @Override
-    public void scrollTo(int x, int y) {
-        if (y>getScrollY()){//向上滑动
-            if (y>=getScrollY()){
-                y=getScrollY();
-            }
-        }
-        super.scrollTo(x, y);
+    /**
+     * 回到刷新的位置
+     */
+    private void backToRefresh(){
+        Log.e(Tag,"回到刷新位置");
+        mBackToRefreshing.setFloatValues(offsetY,headView.getMeasuredHeight()*1.0f);
+        mBackToRefreshing.start();
+
     }
-    private  int mLastY;
-//    @Override
-//    public boolean onInterceptTouchEvent(MotionEvent ev) {
-//        boolean isIntercept=false;
-//        int current_Y= (int) ev.getY();
-//        switch (ev.getAction()){
-//            case MotionEvent.ACTION_DOWN:
-//                isIntercept=false;
-//                break;
-//            case MotionEvent.ACTION_MOVE:
-//                if ((current_Y-mLastY)>0){
-//                    if (contentView.getChildAt(0) instanceof AbsListView){
-//                        // 判断AbsListView是否已经到达内容最顶部(如果已经到达最顶部，就拦截事件，自己处理滑动)
-//                        AdapterView content= (AdapterView) contentView.getChildAt(0);
-//                        if (content.getFirstVisiblePosition() == 0
-//                                || content.getChildAt(0).getTop() == 0) {
-//                            isIntercept = true;
-//                        }
-//                    }
-//                }else {
-//                    if (isRefreshing){
-//                        isIntercept=true;
-//                    }
-//                }
-//                break;
-//            case MotionEvent.ACTION_UP:
-//                isIntercept=false;
-//                break;
-//        }
-//        mLastY=current_Y;
-//        return isIntercept;
-//    }
-    private int currntY;
-    private int lastY;
-//    @Override
-//    public boolean onTouchEvent(MotionEvent event) {
-//        currntY= (int) event.getY();
-//        switch (event.getAction()){
-//            case MotionEvent.ACTION_DOWN:
-//               // mLastY=currntY;
-//                break;
-//            case MotionEvent.ACTION_MOVE:
-//                int dy= currntY-mLastY;
-//                //向下拉动
-//                if (dy>0){
-//                    if (Math.abs(getScrollY())>headView.getMeasuredHeight()){
-//                        scrollBy(0,-dy/3);
-//                        if (!isRefreshing){
-//                            tv_headView.setText("松开刷新");
-//                        }
-//
-//                    }else if (Math.abs(getScrollY())>headView.getMeasuredHeight()/2){
-//                        if (!isRefreshing){
-//                            tv_headView.setText("下拉刷新");
-//                        }
-//                        scrollBy(0, -dy);
-//                    }else {
-//                        scrollBy(0, -dy);
-//                    }
-//                }else {
-//                    scrollBy(0, -dy);
-//                }
-//
-//                break;
-//            case MotionEvent.ACTION_CANCEL:
-//            case MotionEvent.ACTION_UP:
-//                if(!isRefreshing){
-//                int distance=getScrollY()+headView.getMeasuredHeight();
-//                if (Math.abs(getScrollY())>=headView.getMeasuredHeight()/2){
-//                    mScroll.startScroll(0,getScrollY(),0,-distance,300);
-//                    handler.post(new AnnimationTask());
-//                    tv_headView.setText("刷新中");
-//                    if (listener!=null){
-//                        if (!isRefreshing){
-//                            isRefreshing=true;
-//                            listener.onReresh();
-//                        }
-//                    }
-//                }else {
-//                    mScroll.startScroll(0,getScrollY(),0,distance,300);
-//                    handler.post(new AnnimationTask());
-//                }
-//                }else{//正在刷新
-//
-//                }
-//
-//
-//                break;
-//        }
-//        mLastY=currntY;
-//        return true;
-//    }
 
-//    @Override
-//    public void scrollTo(int x, int y) {
-//        if (y>0&&y>=headView.getMeasuredHeight()){
-//           y= headView.getMeasuredHeight();
-//        }
-//        super.scrollTo(x, y);
-//    }
 
+    /**
+     * 初始化各个动画参数
+     */
+    public void initAnimator(){
+        //返回顶部的动画
+        mBackToTop=new ValueAnimator();
+        mBackToTop.setDuration(500);
+        mBackToTop.addUpdateListener(this);
+        //返回刷新位置的动画
+        mBackToRefreshing=new ValueAnimator();
+        mBackToRefreshing.setDuration(500);
+        mBackToRefreshing.addUpdateListener(this);
+    }
+    /**
+     * 移动布局
+     */
+    private void move(float to) {
+        //当前偏移量与目的位置的距离的差值
+        int change= (int) (to-offsetY);
+        if (change==0){
+            return;
+        }
+        headView.offsetTopAndBottom(change);
+        contentView.offsetTopAndBottom(change);
+        invalidate();
+        offsetY=offsetY+change;
+    }
     @Override
     protected void onFinishInflate() {
         initView();
         super.onFinishInflate();
     }
-    class AnnimationTask implements Runnable{
 
-        @Override
-        public void run() {
-            if (mScroll.computeScrollOffset()){
-                scrollTo(mScroll.getCurrX(),mScroll.getCurrY());
-                post(this);
-                if (getScrollY()==0){
-                    isRefreshing=false;
-                }
-            }
-        }
-
+    @Override
+    public void onAnimationUpdate(ValueAnimator animation) {
+        float dy = (float) animation.getAnimatedValue();
+        move(dy);
+        LastPos=dy;
     }
     //刷新接口
     public interface RefreshListener{
@@ -289,13 +229,33 @@ public class PullToRefreshLayout extends LinearLayout {
     }
     //刷新结束
     public void OnRefreshComplete(){
+        backToTop();
+        isRefreshing=false;
+    }
+    /**
+     * 判断子控件能否向下拉,主要代码来自{@link SwipeRefreshLayout#canChildScrollUp()}
+     *
+     * @return 能则返回true
+     */
+    private boolean canChildScrollUp()
+    {
+        //如果用户自己实现判断逻辑，则以用户的逻辑为准
+        if (contentView == null)
+            return true;
 
-        int distance=getScrollY()+headView.getMeasuredHeight();
-        if(distance==0){
-            distance=headView.getMeasuredHeight();
+        if (android.os.Build.VERSION.SDK_INT < 14)
+        {
+            if (contentView instanceof AbsListView)
+            {
+                final AbsListView absListView = (AbsListView) contentView;
+                return absListView.getChildCount() > 0 && (absListView.getFirstVisiblePosition() > 0 || absListView.getChildAt(0).getTop() < absListView.getPaddingTop());
+            } else
+            {
+                return ViewCompat.canScrollVertically(contentView, -1) || contentView.getScrollY() > 0;
+            }
+        } else
+        {
+            return contentView.canScrollVertically(-1);
         }
-        mScroll.startScroll(0,getScrollY(),0,distance,500);
-        handler.post(new AnnimationTask());
-
     }
 }

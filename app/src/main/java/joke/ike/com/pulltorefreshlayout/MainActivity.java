@@ -17,7 +17,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        lv= (ListView) findViewById(R.id.lv);
+        lv= (ListView) findViewById(R.id.content);
         pullToRefreshLayout= (PullToRefreshLayout) findViewById(R.id.activity_main);
         pullToRefreshLayout.setOnRefreshListener(new PullToRefreshLayout.RefreshListener() {
             @Override
